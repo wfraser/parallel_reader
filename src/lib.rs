@@ -9,21 +9,12 @@ pub enum ParallelChunkedReadError<E> {
     Process(E),
 }
 
-pub fn parallel_chunked_read<E: Send + 'static>(
-    mut reader: impl Read,
-    chunk_size: usize,
+fn start_worker_threads<E: Send + 'static>(
     num_threads: usize,
+    work_rx: mpsc::Receiver<(u64, Vec<u8>)>,
+    job_tx: mpsc::Sender<E>,
     f: Arc<impl Fn(u64, &[u8]) -> Result<(), E> + Send + Sync + 'static>,
-) -> Result<(), ParallelChunkedReadError<E>> {
-    // Channel for sending work as (offset, data) pairs to the worker threads.  It's bounded by the
-    // number of workers, to ensure we don't read ahead of the work too far.
-    let (work_tx, work_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(num_threads);
-
-    // If a job returns an error result, it will be sent to this channel. This is used to stop
-    // reading early if any job fails.
-    let (job_tx, job_rx) = mpsc::channel::<E>();
-
-    // Start up workers.
+) -> Vec<thread::JoinHandle<()>> {
     let mut threads = vec![];
     let work_rx = Arc::new(Mutex::new(work_rx));
     for _ in 0 .. num_threads {
@@ -56,6 +47,25 @@ pub fn parallel_chunked_read<E: Send + 'static>(
     }
 
     drop(work_rx);
+    threads
+}
+
+pub fn parallel_chunked_read<E: Send + 'static>(
+    mut reader: impl Read,
+    chunk_size: usize,
+    num_threads: usize,
+    f: Arc<impl Fn(u64, &[u8]) -> Result<(), E> + Send + Sync + 'static>,
+) -> Result<(), ParallelChunkedReadError<E>> {
+    // Channel for sending work as (offset, data) pairs to the worker threads.  It's bounded by the
+    // number of workers, to ensure we don't read ahead of the work too far.
+    let (work_tx, work_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(num_threads);
+
+    // If a job returns an error result, it will be sent to this channel. This is used to stop
+    // reading early if any job fails.
+    let (job_tx, job_rx) = mpsc::channel::<E>();
+
+    // Start up workers.
+    let threads = start_worker_threads(num_threads, work_rx, job_tx, f);
 
     // Read the file in chunks and pass work to worker threads.
     let mut offset = 0u64;
@@ -90,7 +100,6 @@ pub fn parallel_chunked_read<E: Send + 'static>(
     for thread in threads {
         thread.join().expect("failed to join on worker thread");
     }
-    //self.threadpool.join();
 
     if let Err(e) = loop_result {
         // Something stopped the loop prematurely: either a job failed or a read error occurred.
