@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::process::exit;
+use std::sync::Arc;
 use thread_chunked_reader::ThreadChunkedReader;
 
 struct Args {
@@ -38,14 +39,14 @@ fn main() {
     };
 
     let mut reader = ThreadChunkedReader::new(file, args.chunk_size, args.num_threads);
-    let result = reader.process_chunks(|offset, data| {
+    let result = reader.process_chunks(Arc::new(|offset, data: &[u8]| {
         println!("at {}, {} bytes", offset, data.len());
-        if offset == 224 {
+        if offset == 1792 {
             return Err(io::Error::new(io::ErrorKind::Other, "oops"));
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
         Ok(())
-    });
+    }));
 
     println!("final result: {:?}", result);
 }

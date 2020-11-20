@@ -21,7 +21,7 @@ impl<R: Read + Send + 'static> ThreadChunkedReader<R> {
 
     pub fn process_chunks(
         &mut self,
-        mut f: impl FnMut(u64, &[u8]) -> io::Result<()> + Send + Clone + 'static,
+        f: Arc<impl Fn(u64, &[u8]) -> io::Result<()> + Send + Sync + 'static>,
     ) -> io::Result<()> {
         // Each worker thread gets its own read buffer, which gets reused for each read.
         thread_local! {
@@ -42,7 +42,7 @@ impl<R: Read + Send + 'static> ThreadChunkedReader<R> {
             let thread_job_tx = job_tx.clone();
             let thread_reader_mutex = self.reader.clone();
             let chunk_size = self.chunk_size;
-            let mut f = f.clone();
+            let f = f.clone();
 
             self.threadpool.execute(move || {
                 let read_result = {
