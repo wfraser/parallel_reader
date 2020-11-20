@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -7,15 +6,15 @@ use threadpool::ThreadPool;
 pub struct ThreadChunkedReader<R> {
     threadpool: ThreadPool,
     chunk_size: usize,
-    reader: Arc<Mutex<(u64, R)>>,
+    reader: R,
 }
 
-impl<R: Read + Send + 'static> ThreadChunkedReader<R> {
+impl<R: Read> ThreadChunkedReader<R> {
     pub fn new(reader: R, chunk_size: usize, num_threads: usize) -> Self {
         Self {
             threadpool: ThreadPool::new(num_threads),
             chunk_size,
-            reader: Arc::new(Mutex::new((0, reader))),
+            reader,
         }
     }
 
@@ -23,86 +22,54 @@ impl<R: Read + Send + 'static> ThreadChunkedReader<R> {
         &mut self,
         f: Arc<impl Fn(u64, &[u8]) -> io::Result<()> + Send + Sync + 'static>,
     ) -> io::Result<()> {
-        // Each worker thread gets its own read buffer, which gets reused for each read.
-        thread_local! {
-            pub static BUF: RefCell<Vec<u8>> = RefCell::new(vec![]);
-        }
+        // TODO: have a pool of pre-allocated, reusable buffers
 
-        // Each read operation sends a message with its result, which indicates any I/O errors, or
-        // is true/false for whether the end of the file has been reached yet or not.
-        // This gets checked after every chunk is read, before the user's job is run.
-        let (read_tx, read_rx) = mpsc::channel::<io::Result<bool>>();
+        // Channel for sending work as (offset, data) pairs to the worker threads.
+        // It's bounded by the number of workers, to ensure we don't read ahead of the work too
+        // far.
+        let (work_tx, work_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(self.threadpool.max_count());
 
         // If a job returns an error result, it will be sent to this channel. This is used to stop
         // reading early if any job fails.
         let (job_tx, job_rx) = mpsc::channel::<io::Result<()>>();
 
-        let loop_result = loop {
-            let thread_read_tx = read_tx.clone();
+        // Start up workers.
+        // TODO: get rid of threadpool and just manage threads ourselves
+
+        let work_rx = Arc::new(Mutex::new(work_rx));
+        for _ in 0 .. self.threadpool.max_count() {
+            let thread_work_rx = work_rx.clone();
             let thread_job_tx = job_tx.clone();
-            let thread_reader_mutex = self.reader.clone();
-            let chunk_size = self.chunk_size;
             let f = f.clone();
 
             self.threadpool.execute(move || {
-                let read_result = {
-                    let mut guard = thread_reader_mutex.lock().unwrap();
-                    let (ref mut offset, ref mut reader) = *guard;
+                loop {
+                    let (offset, data) = {
+                        let rx = thread_work_rx.lock().unwrap();
 
-                    let read_result = BUF.with(move |cell| {
-                        let mut buf = cell.borrow_mut();
-                        buf.resize(chunk_size, 0);
-
-                        match reader.read(&mut buf) {
-                            Ok(0) => {
-                                // Done reading. Tell the main loop to stop.
-                                thread_read_tx.send(Ok(false)).unwrap();
-                                None
-                            }
-                            Ok(n) => {
-                                // We have a chunk. Increment the offset and let the main loop know
-                                // to keep going.
-                                let job_offset = *offset;
-                                *offset += n as u64;
-                                thread_read_tx.send(Ok(true)).unwrap();
-                                Some((job_offset, n))
-                            }
-                            Err(e) => {
-                                // Read error. Pass the error to the main loop to tell it to stop.
-                                thread_read_tx.send(Err(e)).unwrap();
-                                None
+                        match rx.recv() {
+                            Ok(result) => result,
+                            Err(_) => {
+                                // Sender end of the channel disconnected. Main thread must be done
+                                // and waiting for us.
+                                return;
                             }
                         }
-                    });
-                    // Unlock the mutex and return the result of the read.
-                    read_result
-                };
+                    };
 
-                let (job_offset, nread) = match read_result {
-                    Some(value) => value,
-                    None => return,
-                };
-
-                BUF.with(move |cell| {
-                    let buf = cell.borrow();
-                    match f(job_offset, &buf[0..nread]) {
-                        Ok(()) => (),
-                        Err(e) => {
-                            // Job returned an error. Pass it to the main loop so it can stop
-                            // early.
-                            thread_job_tx.send(Err(e)).unwrap();
-                        }
+                    if let Err(e) = f(offset, &data) {
+                        // Job returned an error. Pass it to the main loop so it can stop early.
+                        thread_job_tx.send(Err(e)).unwrap();
                     }
-                });
+                }
             });
+        }
 
-            // Check the read status (blocking).
-            match read_rx.recv().unwrap() {
-                Ok(true) => (),
-                Ok(false) => break Ok(()), // We've reached EOF.
-                Err(e) => break Err(e),
-            }
+        drop(work_rx);
 
+        // Read the file in chunks and pass work to worker threads.
+        let mut offset = 0u64;
+        let loop_result = loop {
             // Check if any job sent anything. They only send if there's an error, so if we get
             // something, stop the loop and pass the error up.
             match job_rx.try_recv() {
@@ -110,7 +77,24 @@ impl<R: Read + Send + 'static> ThreadChunkedReader<R> {
                 Err(mpsc::TryRecvError::Empty) => (),
                 Err(mpsc::TryRecvError::Disconnected) => unreachable!("we hold the sender open"),
             }
+
+            let mut buf = vec![0u8; self.chunk_size];
+            match self.reader.read(&mut buf) {
+                Ok(0) => {
+                    break Ok(());
+                }
+                Ok(n) => {
+                    buf.truncate(n);
+                    work_tx.send((offset, buf)).unwrap();
+                    offset += n as u64;
+                }
+                Err(e) => {
+                    break Err(e);
+                }
+            }
         };
+
+        drop(work_tx);
 
         // Loop is finished; wait for outstanding jobs to stop.
         self.threadpool.join();
