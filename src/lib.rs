@@ -1,6 +1,6 @@
 #![deny(missing_docs, rust_2018_idioms)]
 
-//! A utility crate for reading from a stream and processing it by chunks in parallel.
+//! A utility for reading from a stream and processing it by chunks in parallel.
 //!
 //! See [`read_stream_and_process_chunks_in_parallel`]() for details.
 
@@ -91,11 +91,34 @@ fn start_worker_threads<E: Send + 'static>(
 ///
 /// If any of the processing functions returns an error, reading and processing will be stopped as
 /// soon as possible and the error returned to the caller. Note that because processing is
-/// happening in parallel, it is possible for processing and/or reading to go past the chunk that
-/// causes an error, but it will stop soon thereafter.
+/// happening in parallel, it is possible for the processing and/or reading to go past the chunk
+/// that causes an error, but it will stop soon thereafter.
 ///
 /// Any read errors on the source will also stop further progress, but similarly, any ongoing
 /// processing will need to finish before this function returns.
+///
+/// The error returned to the caller is only the first one encountered.
+///
+/// # Example:
+/// ```
+/// use parallel_reader::read_stream_and_process_chunks_in_parallel;
+/// use std::sync::Arc;
+/// use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+/// use std::io::Cursor;
+/// fn main() {
+///     let source = Cursor::new(vec![0u8; 12345]);
+///     let num_bytes = Arc::new(AtomicU64::new(0));
+///     let num_bytes_clone = num_bytes.clone();
+///     let result = read_stream_and_process_chunks_in_parallel(source, 1024, 4, Arc::new(
+///         move |_offset, data: &[u8]| -> Result<(), ()> {
+///             // Trivial worker: just sum up the number of bytes in the data.
+///             num_bytes_clone.fetch_add(data.len() as u64, SeqCst);
+///             Ok(())
+///         }));
+///     assert!(result.is_ok());
+///     assert_eq!(12345, num_bytes.load(SeqCst));
+/// }
+/// ```
 pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     mut reader: impl Read,
     chunk_size: usize,
