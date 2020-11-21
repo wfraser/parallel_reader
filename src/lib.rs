@@ -87,7 +87,7 @@ pub fn parallel_chunked_read<E: Send + 'static>(
     let (job_tx, job_rx) = mpsc::channel::<(u64, E)>();
 
     // Start up workers.
-    let threads = start_worker_threads(num_threads, work_rx, job_tx, f);
+    let threads = start_worker_threads(num_threads, work_rx, job_tx.clone(), f);
 
     // Read the file in chunks and pass work to worker threads.
     let mut offset = 0u64;
