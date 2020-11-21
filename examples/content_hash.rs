@@ -36,7 +36,7 @@ struct State {
     blocks: BTreeMap<u64, Digest>,
     next_offset: u64,
     overall_hash: Context,
-    seen_partial_block: bool,
+    incomplete_block_offset: Option<u64>,
 }
 
 impl Default for State {
@@ -45,7 +45,7 @@ impl Default for State {
             blocks: BTreeMap::new(),
             next_offset: 0,
             overall_hash: Context::new(&SHA256),
-            seen_partial_block: false,
+            incomplete_block_offset: None,
         }
     }
 }
@@ -84,18 +84,26 @@ fn main() {
     let state = Arc::new(Mutex::new(State::default()));
     let thread_state = state.clone();
     let result = read_stream_and_process_chunks_in_parallel(file, BLOCK_SIZE, args.num_threads,
-        Arc::new(move |offset, data: &[u8]| -> Result<(), &'static str> {
+        Arc::new(move |offset, data: &[u8]| -> Result<(), String> {
             println!("hashing block at {:#x}: {:#x} bytes", offset, data.len());
 
             let block_hash = digest(&SHA256, data);
             let mut state = thread_state.lock().unwrap();
 
             // Only the last block in the stream can be smaller than the full block size.
-            if state.seen_partial_block {
-                return Err("got incomplete block mid-stream");
+            if let Some(other_offset) = state.incomplete_block_offset {
+                // Check where the other one is; if it's after this, it might be okay because it
+                // might be the last block in the stream.
+                if other_offset < offset {
+                    return Err(format!("got incomplete block mid-stream at {:#x}", other_offset));
+                }
             }
             if data.len() != BLOCK_SIZE {
-                state.seen_partial_block = true;
+                if let Some(other_offset) = state.incomplete_block_offset {
+                    return Err(format!("got incomplete block mid-stream at {:#x}",
+                        offset.min(other_offset)));
+                }
+                state.incomplete_block_offset = Some(offset);
             }
 
             if offset == state.next_offset {
