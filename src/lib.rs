@@ -131,8 +131,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     let (job_tx, job_rx) = mpsc::channel::<(u64, E)>();
 
     // Start up workers.
-    #[allow(clippy::redundant_clone)] // job_tx needs to be kept open to keep the channel open.
-    let threads = start_worker_threads(num_threads, work_rx, job_tx.clone(), f);
+    let threads = start_worker_threads(num_threads, work_rx, job_tx, f);
 
     // Read the file in chunks and pass work to worker threads.
     let mut offset = 0u64;
@@ -178,15 +177,14 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
 
     // Otherwise, the loop finished, but some job may have failed towards the end so check the
     // channel as well.
-    match job_rx.try_recv() {
+    match job_rx.recv() {
         Ok((chunk_offset, error)) => {
             // Some job returned an error.
             Err(Error::Process { chunk_offset, error })
         }
-        Err(mpsc::TryRecvError::Empty) => {
+        Err(mpsc::RecvError) => {
             // No jobs returned any errors.
             Ok(())
         }
-        Err(mpsc::TryRecvError::Disconnected) => unreachable!("we hold the sender open"),
     }
 }
