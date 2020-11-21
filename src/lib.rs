@@ -54,7 +54,6 @@ fn start_worker_threads<E: Send + 'static>(
                         Err(_) => {
                             // Sender end of the channel disconnected. Main thread must be done
                             // and waiting for us.
-                            eprintln!("thread exiting");
                             return;
                         }
                     }
