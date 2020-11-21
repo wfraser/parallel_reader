@@ -1,0 +1,30 @@
+name: Cargo Checks
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    name: Cargo Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v2
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          components: clippy
+          toolchain: stable
+          override: true
+
+      - name: Run clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all-targets -- --deny warnings
+
+      - name: Run cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
