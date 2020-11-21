@@ -1,10 +1,12 @@
-use ring::digest::{digest, Context, SHA256};
+use ring::digest::{digest, Context, Digest, SHA256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, Mutex};
 use thread_chunked_reader::parallel_chunked_read;
+
+const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
 struct Args {
     num_threads: usize,
@@ -22,6 +24,39 @@ fn parse_args() -> Option<Args> {
     Some(Args { num_threads, file_path })
 }
 
+struct State {
+    blocks: BTreeMap<u64, Digest>,
+    next_offset: u64,
+    overall_hash: Context,
+    seen_partial_block: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            blocks: BTreeMap::new(),
+            next_offset: 0,
+            overall_hash: Context::new(&SHA256),
+            seen_partial_block: false,
+        }
+    }
+}
+
+impl State {
+    /// Consume sequential blocks in the internal hash buffer and update the overall hash.
+    pub fn update_overall_hash(&mut self) {
+        loop {
+            let key = self.next_offset;
+            if let Some(hash) = self.blocks.remove(&key) {
+                self.overall_hash.update(hash.as_ref());
+                self.next_offset += BLOCK_SIZE as u64;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn main() {
     let args = if let Some(args) = parse_args() { args } else {
         eprintln!("Usage: {} <num_threads> <file_path>",
@@ -37,35 +72,47 @@ fn main() {
         }
     };
 
-    /*
-    struct State {
-        next_offset: u64,
-        blocks: BTreeMap<u64, Vec<u8>>,
-    }
 
-    let hashes = Arc::new(Mutex::new(State { next_offset: 0, blocks: BTreeMap::new() }));
-    */
-    let hashes = Arc::new(Mutex::new(BTreeMap::new()));
-    let thread_hashes = hashes.clone();
-    let result = parallel_chunked_read(file, 4 * 1024 * 1024, args.num_threads,
-        Arc::new(move |offset, data: &[u8]| {
-            println!("hashing block at {:#x}", offset);
-            let chunk_hash = digest(&SHA256, data);
-            let mut hashes = thread_hashes.lock().unwrap();
-            hashes.insert(offset, Vec::from(chunk_hash.as_ref()));
-            Ok::<(), ()>(())
+    let state = Arc::new(Mutex::new(State::default()));
+    let thread_state = state.clone();
+    let result = parallel_chunked_read(file, BLOCK_SIZE, args.num_threads,
+        Arc::new(move |offset, data: &[u8]| -> Result<(), &'static str> {
+            println!("hashing block at {:#x}: {:#x} bytes", offset, data.len());
+
+            let block_hash = digest(&SHA256, data);
+            let mut state = thread_state.lock().unwrap();
+
+            // Only the last block in the stream can be smaller than the full block size.
+            if state.seen_partial_block {
+                return Err("got incomplete block mid-stream");
+            }
+            if data.len() != BLOCK_SIZE {
+                state.seen_partial_block = true;
+            }
+
+            if offset == state.next_offset {
+                state.overall_hash.update(block_hash.as_ref());
+                state.next_offset += BLOCK_SIZE as u64;
+            } else {
+                state.update_overall_hash();
+                state.blocks.insert(offset, block_hash);
+            }
+
+            Ok(())
         }));
-    if let Err(thread_chunked_reader::Error::Read(e)) = result {
-        eprintln!("read error: {}", e);
+    if let Err(e) = result {
+        eprintln!("{}", e);
         exit(3);
     }
 
-    let hashes = hashes.lock().unwrap();
-    println!("got {} hashes; computing overall hash", hashes.len());
-    let mut hash_of_hashes = Context::new(&SHA256);
-    for h in hashes.values() {
-        hash_of_hashes.update(h);
-    }
+    // No other thread should have a copy of the Arc now, so extract the State struct out of the
+    // Arc and Mutex so we can call finish() on the hash context.
+    let mut state = match Arc::try_unwrap(state) {
+        Ok(state) => state,
+        Err(_) => panic!(),
+    }.into_inner().unwrap();
 
-    println!("{:x?}", hash_of_hashes.finish()/*finalize()*/);
+    state.update_overall_hash();
+    assert!(state.blocks.is_empty(), "all blocks should be incorporated in the overall hash now");
+    println!("{:?}", state.overall_hash.finish());
 }
