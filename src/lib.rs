@@ -4,15 +4,37 @@ use std::sync::mpsc;
 use std::thread;
 
 #[derive(Debug)]
-pub enum ParallelChunkedReadError<E> {
+pub enum Error<E> {
+    /// An error occurred while reading from the source.
     Read(io::Error),
-    Process(E),
+
+    /// An error was returned by a processing function.
+    Process { chunk_offset: u64, error: E },
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for Error<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Read(e) => write!(f, "error while reading: {}", e),
+            Error::Process { chunk_offset, error } => write!(f,
+                "error while processing data at chunk offset {}: {}", chunk_offset, error),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for Error<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Error::Read(ref e) => e,
+            Error::Process { chunk_offset: _, ref error } => error,
+        })
+    }
 }
 
 fn start_worker_threads<E: Send + 'static>(
     num_threads: usize,
     work_rx: mpsc::Receiver<(u64, Vec<u8>)>,
-    job_tx: mpsc::Sender<E>,
+    job_tx: mpsc::Sender<(u64, E)>,
     f: Arc<impl Fn(u64, &[u8]) -> Result<(), E> + Send + Sync + 'static>,
 ) -> Vec<thread::JoinHandle<()>> {
     let mut threads = vec![];
@@ -40,7 +62,7 @@ fn start_worker_threads<E: Send + 'static>(
 
                 if let Err(e) = f(offset, &data) {
                     // Job returned an error. Pass it to the main loop so it can stop early.
-                    thread_job_tx.send(e).unwrap();
+                    thread_job_tx.send((offset, e)).unwrap();
                 }
             }
         }));
@@ -55,14 +77,14 @@ pub fn parallel_chunked_read<E: Send + 'static>(
     chunk_size: usize,
     num_threads: usize,
     f: Arc<impl Fn(u64, &[u8]) -> Result<(), E> + Send + Sync + 'static>,
-) -> Result<(), ParallelChunkedReadError<E>> {
+) -> Result<(), Error<E>> {
     // Channel for sending work as (offset, data) pairs to the worker threads.  It's bounded by the
     // number of workers, to ensure we don't read ahead of the work too far.
     let (work_tx, work_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(num_threads);
 
     // If a job returns an error result, it will be sent to this channel. This is used to stop
     // reading early if any job fails.
-    let (job_tx, job_rx) = mpsc::channel::<E>();
+    let (job_tx, job_rx) = mpsc::channel::<(u64, E)>();
 
     // Start up workers.
     let threads = start_worker_threads(num_threads, work_rx, job_tx, f);
@@ -73,7 +95,7 @@ pub fn parallel_chunked_read<E: Send + 'static>(
         // Check if any job sent anything. They only send if there's an error, so if we get
         // something, stop the loop and pass the error up.
         match job_rx.try_recv() {
-            Ok(e) => break Err(ParallelChunkedReadError::Process(e)),
+            Ok((chunk_offset, error)) => break Err(Error::Process { chunk_offset, error }),
             Err(mpsc::TryRecvError::Empty) => (),
             Err(mpsc::TryRecvError::Disconnected) => unreachable!("we hold the sender open"),
         }
@@ -89,7 +111,7 @@ pub fn parallel_chunked_read<E: Send + 'static>(
                 offset += n as u64;
             }
             Err(e) => {
-                break Err(ParallelChunkedReadError::Read(e));
+                break Err(Error::Read(e));
             }
         }
     };
@@ -110,9 +132,9 @@ pub fn parallel_chunked_read<E: Send + 'static>(
     // Otherwise, the loop finished, but some job may have failed towards the end so check the
     // channel as well.
     match job_rx.try_recv() {
-        Ok(e) => {
+        Ok((chunk_offset, error)) => {
             // Some job returned an error.
-            Err(ParallelChunkedReadError::Process(e))
+            Err(Error::Process { chunk_offset, error })
         }
         Err(mpsc::TryRecvError::Empty) => {
             // No jobs returned any errors.

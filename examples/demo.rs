@@ -47,5 +47,8 @@ fn main() {
             Ok(())
         }));
 
-    println!("final result: {:?}", result);
+    match result {
+        Ok(()) => println!("all succeeded"),
+        Err(e) => println!("{}", e),
+    }
 }
