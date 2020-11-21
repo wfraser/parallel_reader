@@ -105,19 +105,18 @@ fn start_worker_threads<E: Send + 'static>(
 /// use std::sync::Arc;
 /// use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 /// use std::io::Cursor;
-/// fn main() {
-///     let source = Cursor::new(vec![0u8; 12345]);
-///     let num_bytes = Arc::new(AtomicU64::new(0));
-///     let num_bytes_clone = num_bytes.clone();
-///     let result = read_stream_and_process_chunks_in_parallel(source, 1024, 4, Arc::new(
-///         move |_offset, data: &[u8]| -> Result<(), ()> {
-///             // Trivial worker: just sum up the number of bytes in the data.
-///             num_bytes_clone.fetch_add(data.len() as u64, SeqCst);
-///             Ok(())
-///         }));
-///     assert!(result.is_ok());
-///     assert_eq!(12345, num_bytes.load(SeqCst));
-/// }
+///
+/// let source = Cursor::new(vec![0u8; 12345]);
+/// let num_bytes = Arc::new(AtomicU64::new(0));
+/// let num_bytes_clone = num_bytes.clone();
+/// let result = read_stream_and_process_chunks_in_parallel(source, 1024, 4, Arc::new(
+///     move |_offset, data: &[u8]| -> Result<(), ()> {
+///         // Trivial worker: just sum up the number of bytes in the data.
+///         num_bytes_clone.fetch_add(data.len() as u64, SeqCst);
+///         Ok(())
+///     }));
+/// assert!(result.is_ok());
+/// assert_eq!(12345, num_bytes.load(SeqCst));
 /// ```
 pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     mut reader: impl Read,
@@ -134,6 +133,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     let (job_tx, job_rx) = mpsc::channel::<(u64, E)>();
 
     // Start up workers.
+    #[allow(clippy::redundant_clone)] // job_tx needs to be kept open to keep the channel open.
     let threads = start_worker_threads(num_threads, work_rx, job_tx.clone(), f);
 
     // Read the file in chunks and pass work to worker threads.
