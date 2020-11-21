@@ -1,7 +1,11 @@
 `parallel_reader`
 =================
 
-A utility for reading from a file (or any `Read` stream) and processing it by chunks, in parallel.
+[![Crates.io](https://img.shields.io/crates/v/parallel_reader)](https://crates.io/crates/parallel_reader)
+[![docs.rs](https://docs.rs/parallel_reader/badge.svg)](https://docs.rs/parallel_reader)
+
+A utility (with no dependencies) for reading from a file (or any `Read` stream) and processing it by
+chunks, in parallel.
 
 This is useful if reading is not a bottleneck, and you have something slow to do with it that is
 easily parallelizable.

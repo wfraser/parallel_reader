@@ -3,10 +3,15 @@ name = "parallel_reader"
 version = "0.1.0"
 authors = ["William R. Fraser <wfraser@codewise.org>"]
 edition = "2018"
+description = "A utility for reading from a file (or any `Read` stream) and processing it by chunks, in parallel."
+repository = "https://github.com/wfraser/parallel_reader"
+documentation = "https://docs.rs/parallel_reader"
+license = "MIT/Apache-2.0"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 
 [dev-dependencies]
-ring = "0.16.16"
+ring = "0.16.16"  # for examples/content_hash.rs
