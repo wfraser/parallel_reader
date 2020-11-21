@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, Mutex};
-use thread_chunked_reader::parallel_chunked_read;
+use parallel_reader::read_stream_and_process_chunks_in_parallel;
 
 const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
@@ -75,7 +75,7 @@ fn main() {
 
     let state = Arc::new(Mutex::new(State::default()));
     let thread_state = state.clone();
-    let result = parallel_chunked_read(file, BLOCK_SIZE, args.num_threads,
+    let result = read_stream_and_process_chunks_in_parallel(file, BLOCK_SIZE, args.num_threads,
         Arc::new(move |offset, data: &[u8]| -> Result<(), &'static str> {
             println!("hashing block at {:#x}: {:#x} bytes", offset, data.len());
 

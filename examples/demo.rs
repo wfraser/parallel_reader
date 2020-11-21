@@ -2,7 +2,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
-use thread_chunked_reader::parallel_chunked_read;
+use parallel_reader::read_stream_and_process_chunks_in_parallel;
 
 struct Args {
     num_threads: usize,
@@ -37,7 +37,7 @@ fn main() {
         }
     };
 
-    let result = parallel_chunked_read(file, args.chunk_size, args.num_threads,
+    let result = read_stream_and_process_chunks_in_parallel(file, args.chunk_size, args.num_threads,
         Arc::new(|offset, data: &[u8]| {
             println!("at {}, {} bytes", offset, data.len());
             if offset == 1792 {

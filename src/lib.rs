@@ -1,15 +1,28 @@
+#![deny(missing_docs, rust_2018_idioms)]
+
+//! A utility crate for reading from a stream and processing it by chunks in parallel.
+//!
+//! See [`read_stream_and_process_chunks_in_parallel`]() for details.
+
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::thread;
 
+/// An error during reading or processing of a stream.
 #[derive(Debug)]
 pub enum Error<E> {
     /// An error occurred while reading from the source.
     Read(io::Error),
 
     /// An error was returned by a processing function.
-    Process { chunk_offset: u64, error: E },
+    Process {
+        /// The offset of the chunk that was being processed which led to the error.
+        chunk_offset: u64,
+
+        /// The error returned by the processing function.
+        error: E,
+    },
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Error<E> {
@@ -71,7 +84,19 @@ fn start_worker_threads<E: Send + 'static>(
     threads
 }
 
-pub fn parallel_chunked_read<E: Send + 'static>(
+/// Read from a stream and process it by chunks in parallel.
+///
+/// Reads are done sequentially on the current thread, in chunks of the given size, then the given
+/// function is run on them in parallel on the given number of threads.
+///
+/// If any of the processing functions returns an error, reading and processing will be stopped as
+/// soon as possible and the error returned to the caller. Note that because processing is
+/// happening in parallel, it is possible for processing and/or reading to go past the chunk that
+/// causes an error, but it will stop soon thereafter.
+///
+/// Any read errors on the source will also stop further progress, but similarly, any ongoing
+/// processing will need to finish before this function returns.
+pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     mut reader: impl Read,
     chunk_size: usize,
     num_threads: usize,
