@@ -79,8 +79,6 @@ fn start_worker_threads<E: Send + 'static>(
             }
         }));
     }
-
-    drop(work_rx);
     threads
 }
 
@@ -147,6 +145,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
             Err(mpsc::TryRecvError::Disconnected) => unreachable!("we hold the sender open"),
         }
 
+        // TODO(wfraser) it'd be nice to re-use these buffers somehow
         let mut buf = vec![0u8; chunk_size];
         match reader.read(&mut buf) {
             Ok(0) => {
@@ -163,6 +162,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
         }
     };
 
+    // Close the work channel. This'll cause the workers to exit next time they try to recv from it.
     drop(work_tx);
 
     // Loop is finished; wait for outstanding jobs to stop.
