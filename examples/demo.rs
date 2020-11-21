@@ -1,3 +1,18 @@
+//! Silly demo showing how the processing is done in parallel, potentially slightly out of order,
+//! and showing how if a worker raises an error, it gets propogated, but not necessarily right
+//! away.
+//!
+//! In this code, the workers just print out info about the chunk offsets, and then sleep for one
+//! second before returning successfully. Unless the offset is 1792, in which case it returns an
+//! error which eventually gets returned to the main thread.
+//!
+//! For example, run this with `cargo run --example demo 4 256 src/lib.rs` to read 256 bytes at a
+//! time, and run 4 workers at a time. One of the workers will encounter offset 1792, and
+//! processing will stop there (approximately).
+//!
+//! Change the chunk size to something that's not a fraction of 1792 and it'll read throught the
+//! whole file successfully.
+
 use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;

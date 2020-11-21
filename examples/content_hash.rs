@@ -1,3 +1,11 @@
+//! This example generates a ["content
+//! hash"](https://www.dropbox.com/developers/reference/content-hash) for a file. A content hash is
+//! made by hashing a file 4 MiB at a time, concatenating those hashes, and then taking the hash of
+//! that. It uses the SHA256 hash.
+//!
+//! This example shows how to use this crate to do do that hashing in parallel on an arbitrary
+//! number of threads.
+
 use ring::digest::{digest, Context, Digest, SHA256};
 use std::collections::BTreeMap;
 use std::fs::File;
