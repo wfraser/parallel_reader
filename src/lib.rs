@@ -122,6 +122,8 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
     num_threads: usize,
     f: Arc<impl Fn(u64, &[u8]) -> Result<(), E> + Send + Sync + 'static>,
 ) -> Result<(), Error<E>> {
+    assert!(num_threads > 0, "non-zero number of threads required");
+
     // Channel for sending work as (offset, data) pairs to the worker threads.  It's bounded by the
     // number of workers, to ensure we don't read ahead of the work too far.
     let (work_tx, work_rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(num_threads);
@@ -152,7 +154,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
             }
             Ok(n) => {
                 buf.truncate(n);
-                work_tx.send((offset, buf)).unwrap();
+                work_tx.send((offset, buf)).expect("failed to send work to threads");
                 offset += n as u64;
             }
             Err(e) => {
