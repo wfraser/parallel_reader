@@ -148,7 +148,7 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
 
         // TODO(wfraser) it'd be nice to re-use these buffers somehow
         let mut buf = vec![0u8; chunk_size];
-        match reader.read(&mut buf) {
+        match large_read(&mut reader, &mut buf) {
             Ok(0) => {
                 break Ok(());
             }
@@ -189,4 +189,26 @@ pub fn read_stream_and_process_chunks_in_parallel<E: Send + 'static>(
             Ok(())
         }
     }
+}
+
+// std::io::Read::read() is not required to read the full buffer size if it is not available all at
+// once. A common case when this happens is when reading from a pipe, where only a few KB are
+// available for any given read. For our purposes, though, we really want full buffers until we hit
+// EOF, so do multiple reads in a loop if necessary.
+fn large_read(mut source: impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut total = 0;
+    loop {
+        match source.read(&mut buf[total ..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                if total == buf.len() {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,  // retriable error
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
 }
